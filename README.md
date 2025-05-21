@@ -1,15 +1,24 @@
+1. 검색 시스템 구축 이전에, 앞으로의 시스템 튜닝에 대한 기준을 갖추기 위해 간단한 test set 구성
+- biomarker에 대한 검색은 두 가지 방향으로 생각할 수 있음
+    1. 특정 biomarker에 대한 정보 검색 (biomarker -> 정보 및 의학적 대상)
+    2. 어떤 의학적 대상과 관련된 biomarker들 검색 (의학적 대상 -> biomarker)
+    - 양방향 모두 실질적으로 필요한 사용법이므로 전부 가능하도록 구현하는 것이 이상적이나, 구현에 시간 등의 제약이 있으므로 우선 task를 단순화하여 전자를 우선적으로 구현하기로 함
+- test set은 각 row가 (biomarker, { explanation })의 쌍으로 구성되어 있음
+    - 20개 row를 수작업으로 만듦 (분야는 가능한 한 다양하게)
+    - input(biomarker)에 대한 label(explanation)은 biomarker에 대한 필수적인 정보의 집합으로, biomarker에 대한 해설을 제공할 때 필수적으로 포함되어야 할 정보들이라 할 수 있음. 테스트하는 시스템이 내놓은 output이 해당 정보들을 얼마나 포함하고 있는지, 얼마나 누락하고 있는지가 주요한 평가 기준 (test set을 정교하게 만들지는 않았으므로 유연하게 고려)
+    - G-Eval 등으로 자동화할 수도 있겠으나, test set 사이즈가 작고 다른 할 일도 많으므로 보류
+    - 시스템 튜닝을 할 때마다 25개 row에 대해 시스템을 테스트 -> 나온 결과들을 직접 평가함 (set 사이즈가 작으므로 크게 부담되지 않으며, 사람이 직접 검사함으로써 미세한 포인트들을 잡아낼 수 있음) -> 결과로부터 보완할 점을 찾아 반복
 
-지속적인 시스템 튜닝을 위해 간단한 test set 구성 (biomarker - explanation (requirements))
-- 이를 바탕으로 evaluation을 G-Eval 등으로 자동화할 수도 있겠으나 test set 사이즈도 작고 우선순위가 낮으므로 일단 보류
-
-Entrez와 PMC를 조합해서 query에 대해 논문 pdf들을 fetch해올 수 있는 기본적인 파이프라인 구축
-- License 문제: open-access만 사용하도록 filter
-
-Abstract text 등 esummary가 제공하는 summary info만 사용한 ranking-based search 테스트 (biomarker에 대한 정보를 잘 포함하고 있는 논문을 찾아낼 수 있는가?)
-- Abstract-based search -> pdf text-based search의 2-step을 일단 상정하고 있음
-- pdf parsing 방식에 따라 하나로 합치는 것도 가능할 듯함 (text block 단위라든지)
-
-pdf parser
-- speed performance를 위해 가급적 static 방식을 채택하고 싶으나 현실적으로 LLM-based를 사용할 듯
-- 방문한 적 있는 pdf에 대한 parsing result는 caching하는 식으로 실제 performance를 개선할 수 있을 것으로 보임
-- 필요한 정보만 뽑아서 구조화하는 작업
+2. 논문 내 텍스트를 사용할 수 있는 데이터 파이프라인 및 검색 시스템 구축
+- 원래는 Entrez와 PMC를 조합해서 query에 대해 논문 pdf들을 fetch해오고, pdf로부터 text를 추출하는 이중의 과정을 거치려고 했으나, PMC에서 pdf text extraction이 필요하지 않도록 full text를 바로 제공하는 set이 있어 이것을 사용하는 쪽으로 선회
+    - 선회하기 이전에는:
+        - Abstract text 등 esummary가 제공하는 summary info만 사용한 ranking-based search를 테스트해봄. (biomarker에 대한 정보를 잘 포함하고 있는 논문을 찾아낼 수 있는가?) 하지만 논문의 abstract만으로는 논문이 biomarker에 대한 유용한 설명을 포함하고 있는지 판별하기 어려움을 발견
+    - 단 이 set은 Entrez를 사용할 수 없으므로 검색 기능을 직접 구현해야 함. 시간은 조금 더 들겠지만, LLM feature의 필요에 최적화된 custom 검색 시스템을 설계할 수 있으므로 좋은 부분도 있음
+- 1) 일단 논문을 추려낸 다음 2) 추려낸 논문들의 내용에서 원하는 정보를 찾는 2-step 방식은 biomarker에 대한 정보를 찾는 데는 비효율적이라는 것을 발견했으므로, 두 과정을 하나로 합쳐서 처음부터 논문 내의 정보에 바로 접근할 수 있게 하는 벙법을 모색
+    - Search performance를 개선한다는 다른 맥락에서, caching을 적극적으로 사용한다는 아이디어가 있었음. 2-step 방식에서 이미 접근한 적 있는 논문은 그 내용을 다시 참조해봤자 동일한 내용일 것이므로, 검색할 때마다 매번 LLM으로 내용을 분석하지 않고, 첫 참조에 분석 결과를 저장하여 다음 참조부터는 분석이 완료된 결과를 바로 사용할 수 있게 하여 연산 부담을 줄이는 것. 이를 확장하여 아예 처음부터 caching만 남겨서, 논문의 내용을 처음에 전부 (LLM을 사용해) 분석하여 구조화된 정보로 저장하고, biomarker에 대한 검색은 이 구조화된 정보 내에서 행하는 방식을 생각할 수 있음
+    - 이 방식대로면 프로젝트의 주제는 단순한 LLM을 사용한 검색에서, LLM을 사용한 KB 구축 및 검색으로 발전함
+    
+3. KB
+- 따라서 1) LLM을 사용해 PMC text dataset으로부터 KB 구축, 2) LLM을 사용한 KB 검색 구현의 두 가지 task로 정함
+    - (가용 가능한 자원의 한계로) PMC set 전체를 쓰지는 않고, 소량 subset만 사용할 예정
+- 이번주는 KB 구축을 위해 몇 가지 naive한 방법들을 탐구해보았음
